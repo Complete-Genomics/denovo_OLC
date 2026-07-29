@@ -56,6 +56,3 @@ See the module docstrings for the full configuration surface (overlap/mismatch t
 
 Actively used in production for per-UMI 16S rRNA amplicon and metagenomic fragment reconstruction at multi-million-UMI scale.
 
-## License
-
-Released under [CC BY-NC 4.0](LICENSE) (Attribution-NonCommercial) — free to share and adapt with attribution; commercial use is not permitted. See [LICENSE](LICENSE) for the full text.
