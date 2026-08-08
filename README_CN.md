@@ -56,18 +56,6 @@ Python每个进程的字符串哈希随机化，意味着朴素地用`set()`做�
 - **在真实数据上验证过，不只是合成基准测试。** 合成测试套件（覆盖overlap检测、chimeric合并安全性、确定性tie-break、多进程配置传播等等的单元测试）跟针对真实测序数据的取证分析配合使用，用来捕捉合成测试在结构上无法覆盖的失败模式——不对称的read长度分布、平台特有的adapter构造、以及真实存在的病态深度离群值。
 - **准确度是测出来的，不是假设出来的。** 用一个参考序列完全已知的mock community直接测量per-base identity和chimera率，而不是只靠群落组成"看起来合理"这种间接判断，每个QC预设的产出/准确度权衡都来自这个实测。好几个听起来很合理的改进方案——针对疑似read混杂的整UMI剔除、indel容忍的overlap打分、homopolymer-aware组装——都实现过，但在留出的ground truth上测不出实际收益后被否决，不是靠直觉留下来的。
 
-## 用法
-
-```bash
-python3 src/denovo_seed_olc.py \
-  --sequence_type se \
-  --num_processes 30 \
-  --min_ctg_len 400 \
-  --r2 data_R2_sgrep.tsv
-```
-
-完整的配置项（overlap/mismatch阈值、内部锚定和集体救援开关、抛光参数、输出上限）请参见模块docstring。
-
 ## 状态
 
 正在生产环境中用于百万UMI级别规模的per-UMI 16S rRNA amplicon和宏基因组fragment重建，生产环境的QC层（组装前read质量过滤、组装后chimera检测、按多样性自适应的QC预设）已在一个参考序列完全已知的mock community上完成验证。

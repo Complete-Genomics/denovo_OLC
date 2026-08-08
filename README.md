@@ -47,18 +47,6 @@ What counts as an acceptable fragment-quality/yield trade-off depends heavily on
 - **Validated on real data, not just synthetic benchmarks.** The synthetic test suite (unit tests covering overlap detection, chimeric-merge safety, deterministic tie-breaking, multiprocessing config propagation, and more) is paired with forensic analysis against real sequencing data to catch failure modes synthetic tests structurally cannot — asymmetric read-length distributions, platform-specific adapter constructs, and genuinely pathological real-world depth outliers.
 - **Accuracy claims are measured, not assumed.** A mock community with fully known reference sequences is used to directly measure per-base identity and chimera rate rather than relying on community-composition plausibility alone, and every QC preset's yield/accuracy trade-off is reported from that measurement. Several plausible-sounding improvements were implemented and specifically rejected when they did not measurably help on held-out ground truth — including whole-UMI removal for suspected read mixing, indel-tolerant overlap scoring, and homopolymer-aware assembly — rather than being kept on the strength of intuition alone.
 
-## Usage
-
-```bash
-python3 src/denovo_seed_olc.py \
-  --sequence_type se \
-  --num_processes 30 \
-  --min_ctg_len 400 \
-  --r2 data_R2_sgrep.tsv
-```
-
-See the module docstrings for the full configuration surface (overlap/mismatch thresholds, internal-anchor and collective-rescue toggles, polish parameters, output caps).
-
 ## Status
 
 Actively used in production for per-UMI 16S rRNA amplicon and metagenomic fragment reconstruction at multi-million-UMI scale, with production QC layers (pre-assembly read-quality filtering, post-assembly chimera detection, diversity-adaptive presets) validated against a mock community with fully known reference sequences.
