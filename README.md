@@ -1,6 +1,6 @@
 # denovo_OLC
 
-A standalone release of the [LFR pipeline](https://github.com/Complete-Genomics/LFR_Pipeline) denovo module: an in-process Overlap-Layout-Consensus (OLC) assembler purpose-built for **single-end 600bp (SE600) linked-read data**, reconstructing one fragment per UMI/barcode at millions-of-molecules scale. Designed as a drop-in alternative to per-UMI de Bruijn graph assembly (e.g. forking a MEGAHIT subprocess per barcode), and engineered specifically around the noise and read-structure characteristics that SE600 data — as opposed to short paired-end reads — actually presents.
+A standalone release of the [LFR pipeline denovo module](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo): an in-process Overlap-Layout-Consensus (OLC) assembler purpose-built for **single-end 600bp (SE600) linked-read data**, reconstructing one fragment per UMI/barcode at millions-of-molecules scale. Designed as a drop-in alternative to per-UMI de Bruijn graph assembly (e.g. forking a MEGAHIT subprocess per barcode), and engineered specifically around the noise and read-structure characteristics that SE600 data — as opposed to short paired-end reads — actually presents.
 
 ## Why SE600 needs a purpose-built assembler
 
@@ -34,11 +34,18 @@ This is where SE600's read length becomes a double-edged sword: a 600bp single-e
 ### 7. Production-grade multiprocessing correctness
 Handles the divergent semantics of `fork` (Linux default) vs. `spawn` (macOS/Windows default) multiprocessing start methods correctly — configuration state is explicitly propagated to every worker rather than relying on `fork`'s copy-on-write inheritance, which silently breaks under `spawn`. Task scheduling is tuned for the heterogeneous per-barcode cost distribution inherent to biological data (most barcodes cost milliseconds; a small tail costs orders of magnitude more), avoiding the worker starvation that a naive fixed-chunksize scheduler produces under that distribution.
 
+### 8. Reference-free chimera detection via verified-spanning-depth collapse
+A UMI's read pool can end up containing reads from more than one source molecule — barcode collision or cross-contamination upstream of assembly, not an assembly bug — and when it does, the assembler's own overlap logic can bridge the two through a short shared motif and emit a single chimeric contig that looks completely healthy by ordinary coverage: every read in the file genuinely belongs to that barcode, so naive read-back consistency checking cannot see the problem at all. `denovo_OLC` instead checks *verified spanning depth*: for every interior contig position, how many reads cross it with real, two-sided sequence identity, not just k-mer placement. A true chimera junction shows a sharp collapse in verified-spanning support while ordinary coverage stays healthy, because no single physical molecule spans both sides of a join between two different organisms. Measured against a mock-community control with fully known reference sequences, this signal reaches AUC 0.827 for chimera discrimination, where the same read pool's naive read-back consistency and an off-the-shelf reference-free chimera detector both perform at or near chance.
+
+### 9. Diversity-adaptive QC, tuned per run without operator input
+What counts as an acceptable fragment-quality/yield trade-off depends heavily on the sample: a low-diversity community and a high-diversity environmental sample present very different costs for the same QC stringency. Rather than asking the operator to declare a sample type, a lightweight probe measures the run's own cross-barcode sequence-identity distribution — reads from different barcodes are, by construction, different source molecules, so this distribution is a built-in negative control requiring no external reference — and selects an appropriate QC preset automatically, with the decision recorded for audit. Every preset's fragment-yield/accuracy trade-off is measured against ground truth rather than assumed.
+
 ## Design philosophy
 
 - **No external assembler dependency.** Pure standard library — no compiled extensions, no subprocess management, no non-deterministic third-party graph library behavior to reason about.
 - **Correctness has priority over aggressive heuristics.** Every fallback mechanism (internal anchoring, collective rescue) is deliberately ordered *after* the safest, most conservative option succeeds or is exhausted, and every optimization is validated against a fixed-output-digest regression before being accepted.
 - **Validated on real data, not just synthetic benchmarks.** The synthetic test suite (unit tests covering overlap detection, chimeric-merge safety, deterministic tie-breaking, multiprocessing config propagation, and more) is paired with forensic analysis against real sequencing data to catch failure modes synthetic tests structurally cannot — asymmetric read-length distributions, platform-specific adapter constructs, and genuinely pathological real-world depth outliers.
+- **Accuracy claims are measured, not assumed.** A mock community with fully known reference sequences is used to directly measure per-base identity and chimera rate rather than relying on community-composition plausibility alone, and every QC preset's yield/accuracy trade-off is reported from that measurement. Several plausible-sounding improvements were implemented and specifically rejected when they did not measurably help on held-out ground truth — including whole-UMI removal for suspected read mixing, indel-tolerant overlap scoring, and homopolymer-aware assembly — rather than being kept on the strength of intuition alone.
 
 ## Usage
 
@@ -54,5 +61,5 @@ See the module docstrings for the full configuration surface (overlap/mismatch t
 
 ## Status
 
-Actively used in production for per-UMI 16S rRNA amplicon and metagenomic fragment reconstruction at multi-million-UMI scale.
+Actively used in production for per-UMI 16S rRNA amplicon and metagenomic fragment reconstruction at multi-million-UMI scale, with production QC layers (pre-assembly read-quality filtering, post-assembly chimera detection, diversity-adaptive presets) validated against a mock community with fully known reference sequences.
 
