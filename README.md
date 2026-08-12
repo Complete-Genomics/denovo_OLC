@@ -1,53 +1,256 @@
-# denovo_OLC
+# denovo_OLC: evidence-aware per-UMI assembly for SE600 linked reads
 
-A standalone release of the [LFR pipeline denovo module](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo): an in-process Overlap-Layout-Consensus (OLC) assembler purpose-built for **single-end 600bp (SE600) linked-read data**, reconstructing one fragment per UMI/barcode at millions-of-molecules scale. Designed as a drop-in alternative to per-UMI de Bruijn graph assembly (e.g. forking a MEGAHIT subprocess per barcode), and engineered specifically around the noise and read-structure characteristics that SE600 data — as opposed to short paired-end reads — actually presents.
+## Abstract
 
-## Why SE600 needs a purpose-built assembler
+Barcode-partitioned SE600 libraries contain small pools of single-end reads that
+originate predominantly from one physical DNA molecule.  Per-UMI assembly must
+therefore work with sparse, heterogeneous pools at million-UMI scale, while
+remaining robust to read-end artefacts and independent sequencing errors.  We
+developed `denovo_OLC`, a deterministic, in-process overlap-layout-consensus
+(OLC) assembler for this setting.  The assembler combines boundary-k-mer
+candidate indexing, conservative verified overlaps, internal-anchor recovery,
+and a multi-read pileup rescue that is invoked only after ordinary pairwise
+extension fails.  A separate, pre-assembly read-quality stage represents
+within-UMI read disagreement as a conflict graph.  A learned per-read identity
+score improves this graph method when used as a *tie-breaker* rather than as a
+stand-alone filter: on a held-out 3,000-barcode Zymo evaluation set, mean
+contig identity increased from 95.05% with the graph-only filter to 95.22%
+with graph-plus-ML tie-breaking at essentially identical removal rate.
 
-Complete LFR (cLFR) and similar barcode-partitioned sequencing technologies produce, per physical DNA molecule, a small cluster of short reads sharing one barcode. Most existing per-barcode assembly tooling is designed around short (~150bp) paired-end reads, where mate-pair information helps disambiguate repeats and adapter read-through rarely reaches deep enough to matter. **SE600 data is a different regime**: single-end, ~600bp reads with no mate to cross-check against, long enough to routinely read past a shorter physical insert into ligation adapter, sample index, and even the barcode itself, and assembled at a scale (millions of barcodes per run) where noise that would be a rare edge case at low throughput becomes a routine, high-volume failure mode. Two problems fall directly out of this:
+The work also establishes important negative results.  Direct pairwise OLC is
+less tolerant than a de Bruijn graph to redundant reads carrying independent
+errors; globally relaxing the mismatch threshold is not a safe remedy.
+Likewise, a standalone ML ranker had strong cross-validation accuracy but was
+inferior to the conflict graph as an assembly decision rule.  The resulting
+design retains local graph structure as the safety-critical decision mechanism
+and uses ML only where its per-read estimate adds information.  On a fixed
+20,000-UMI benchmark, correcting raw-component/merge/output semantics increased
+the number of >=1 kb contigs from 16,908 to 21,139; 99.3% of lengthened primary
+contigs had >=95% one-fold read-back breadth.
 
-- **De Bruijn graph assembly requires k-mer coverage ≥ 2.** Low-depth barcodes (a common, non-negligible fraction of any real barcode-partitioned dataset) simply cannot be assembled — the graph fragments or never forms.
-- **Forking a full assembler subprocess per barcode does not scale.** At 1.5–3M barcodes per run, subprocess-spawn overhead alone becomes the dominant cost, independent of the actual assembly work.
+## Introduction
 
-`denovo_OLC` addresses both by implementing the classic OLC paradigm (overlap detection → layout → consensus) directly in-process, in pure Python, with no external assembler dependency and no per-barcode subprocess fork — including graceful assembly from as little as a **single read** — while treating SE600-specific noise (boundary noise, combined independent read errors, adapter/index/barcode read-through) as first-class problems to detect and handle rather than edge cases to ignore.
+Linked-read barcodes provide a natural assembly unit: the reads assigned to one
+UMI are a small, local evidence pool rather than a whole metagenome.  This
+structure makes per-UMI assembly attractive, but it also exposes failure modes
+that are muted in conventional high-depth assembly.  In SE600 data, reads are
+long enough to encounter noisy termini and read-through sequence, yet individual
+barcode pools can contain only partial tiling evidence.  At 1.5--3 million UMI
+scale, launching a general-purpose assembler for every barcode is dominated by
+process overhead.
 
-## Core innovations
+An initial greedy OLC implementation was fast and useful for low-depth pools,
+including single-read cases, but its limitation was fundamental: comparing two
+reads combines their independent errors.  Genuine bridges can therefore fail a
+strict pairwise mismatch test even when the full read pool supports a coherent
+path.  A de Bruijn graph aggregates k-mer support across reads and is naturally
+more tolerant of this failure mode.  The goal here is not to reproduce a global
+de Bruijn graph for every UMI.  Instead, `denovo_OLC` preserves fast,
+conservative OLC for ordinary pools and deploys shared, local evidence only in
+the stalled cases that need it.
 
-### 1. Output-sensitive candidate discovery via boundary k-mer inverted indices
-Rather than re-scanning the full read pool for every contig-extension step (the naive OLC approach, which degrades to O(attempts × pool size) on barcodes with poor pairwise mergeability), a per-UMI inverted index maps boundary k-mers to candidate reads once, and every extension step queries it directly. On a documented worst-case real-world barcode, this cut single-UMI assembly time from **100.2s to 5.07s (11.7×)** while producing a byte-for-byte identical assembly (verified by digest equality against the unindexed baseline across isolated and 500-barcode batch tests) — the index only prunes the search, it never changes which overlaps are accepted.
+A second challenge is read selection.  A read may be intrinsically low quality,
+but whether removing it improves an assembly depends on its disagreement with
+the *other reads in the same UMI*.  This distinction motivates a graph-aware ML
+design: ML is not used to replace the graph with global per-read ranking; it is
+used to resolve otherwise arbitrary choices inside a conflict graph.
 
-### 2. Bidirectional internal k-mer anchoring
-Real reads carry noise at their literal 5′/3′ ends (adapter read-through, sequencing error enrichment near read termini). A naive OLC that only tries to match read *boundaries* silently fails to extend past such noise even when a clean, unambiguous overlap exists a few bases further in. `denovo_OLC` adds an internal-anchor fallback — indexed in both the forward and reverse direction — that locates a verified internal anchor and extends from there, recovering merges that boundary-only matching would miss entirely.
+## Materials and methods
 
-### 3. Collective pileup rescue with cross-attempt evidence sharing
-Pairwise, single-read overlap comparison has a structural weakness: two reads that each carry independent sequencing errors combine both error rates when compared directly, often pushing a genuinely valid overlap past the mismatch-rate threshold. Rather than relaxing that threshold globally (which would open the door to chimeric misassembly), `denovo_OLC` falls back — only when ordinary pairwise extension stalls — to anchoring multiple reads simultaneously via long, low-collision k-mers and extending only the region with pileup (multi-read) support. Evidence can be shared across separate greedy build attempts on the same barcode, not just within one, letting reads consumed by an earlier attempt still contribute supporting votes to a later one. A progress invariant (every accepted extension must consume at least one previously-unused read) guarantees termination even under adversarial repetitive input.
+### Data and evaluation cohorts
 
-### 4. Lightweight majority-vote consensus polish
-After assembly, a k-mer-offset voting pass re-aligns every input read against the draft contig (no full dynamic-programming realignment) and flips a position only when there is majority, quorum-backed disagreement — correcting substitution errors introduced during greedy extension without the cost or complexity of a full multiple-sequence-alignment consensus step.
+The analyses used trimmed SE600 linked-read data grouped by barcode, a
+ZymoBIOMICS mock community with known references, and a high-diversity soil
+(`hs6`) cohort without a complete truth reference.  The principal controlled
+OLC benchmark used the first 20,000 barcodes from the same trimmed input for
+all compared runs.  Comparisons were always restricted to the intersection of
+barcodes actually present in both outputs; comparing unmatched full datasets is
+invalid and was explicitly avoided.
 
-### 5. Deterministic-by-construction output
-Python's per-process string-hash randomization means naive use of `set()` for deduplication can silently make seed selection — and therefore the entire greedy assembly trajectory — non-reproducible across runs of *identical* input. Every ordering-sensitive step in `denovo_OLC` uses an explicit, content-based deterministic tie-break, so the same input always produces the same output regardless of interpreter hash seed, process start method, or worker count.
+For Zymo, contigs and reads were evaluated against the known reference set using
+base-level identity and alignment coverage.  For data without a complete
+reference, we used read-back breadth, verified two-end support, and a
+reference-free junction signal.  The junction signal counts reads that span an
+interior position with locally verified sequence identity on both sides; it is
+designed to distinguish real spanning evidence from a superficial k-mer
+placement across a putative chimera join.
 
-### 6. Adapter/index/barcode read-through detection
-This is where SE600's read length becomes a double-edged sword: a 600bp single-end read routinely runs past a shorter physical insert, straight through ligation adapter and sample index, and — in rolling-circle-amplified (DNB-style) library preps — back into the barcode itself. Left untrimmed, this technical read-through is assembled as if it were biological sequence, inflating apparent contig length and fragmenting what should be a single contiguous assembly. `denovo_OLC`'s validation tooling includes reference-free forensic methods (positional-invariance testing, abundance-matched conserved-region controls, and cross-referencing against reference sequence databases) to distinguish genuine adapter contamination from true biological conserved regions — critical for correctly attributing this SE600-specific class of length/fragmentation artifact rather than misdiagnosing it as an assembly bug.
+### OLC assembly
 
-### 7. Production-grade multiprocessing correctness
-Handles the divergent semantics of `fork` (Linux default) vs. `spawn` (macOS/Windows default) multiprocessing start methods correctly — configuration state is explicitly propagated to every worker rather than relying on `fork`'s copy-on-write inheritance, which silently breaks under `spawn`. Task scheduling is tuned for the heterogeneous per-barcode cost distribution inherent to biological data (most barcodes cost milliseconds; a small tail costs orders of magnitude more), avoiding the worker starvation that a naive fixed-chunksize scheduler produces under that distribution.
+For one barcode, unique reads are sorted deterministically by decreasing length
+and sequence, then assembled through repeated greedy components.  Candidate
+extension is evaluated in both orientations.  An overlap is accepted only after
+a shared boundary k-mer prefilter and a full suffix-prefix comparison satisfy
+the configured minimum overlap and mismatch-rate limit.  Thus a k-mer is a
+candidate-discovery device, not the final correctness criterion.
 
-### 8. Reference-free chimera detection via verified-spanning-depth collapse
-A UMI's read pool can end up containing reads from more than one source molecule — barcode collision or cross-contamination upstream of assembly, not an assembly bug — and when it does, the assembler's own overlap logic can bridge the two through a short shared motif and emit a single chimeric contig that looks completely healthy by ordinary coverage: every read in the file genuinely belongs to that barcode, so naive read-back consistency checking cannot see the problem at all. `denovo_OLC` instead checks *verified spanning depth*: for every interior contig position, how many reads cross it with real, two-sided sequence identity, not just k-mer placement. A true chimera junction shows a sharp collapse in verified-spanning support while ordinary coverage stays healthy, because no single physical molecule spans both sides of a join between two different organisms. Measured against a mock-community control with fully known reference sequences, this signal reaches AUC 0.827 for chimera discrimination, where the same read pool's naive read-back consistency and an off-the-shelf reference-free chimera detector both perform at or near chance.
+The implementation uses the following ordered evidence ladder:
 
-### 9. Diversity-adaptive QC, tuned per run without operator input
-What counts as an acceptable fragment-quality/yield trade-off depends heavily on the sample: a low-diversity community and a high-diversity environmental sample present very different costs for the same QC stringency. Rather than asking the operator to declare a sample type, a lightweight probe measures the run's own cross-barcode sequence-identity distribution — reads from different barcodes are, by construction, different source molecules, so this distribution is a built-in negative control requiring no external reference — and selects an appropriate QC preset automatically, with the decision recorded for audit. Every preset's fragment-yield/accuracy trade-off is measured against ground truth rather than assumed.
+1. Boundary suffix-prefix extension using a per-UMI boundary-k-mer inverted
+   index.
+2. Bidirectional internal-anchor extension for reads with noisy literal ends;
+   the anchor must be followed by a verified overlap.
+3. Collective rescue after the first two paths stall.  Reads are placed by
+   multiple co-linear exact 17-mers; repetitive anchors are excluded.  Only
+   bases outside the draft contig with support from at least two independent
+   reads are appended.
+4. Post-assembly majority-vote polishing, which changes a base only with quorum
+   and concordance support.
 
-## Design philosophy
+All raw components are retained until post-assembly deduplication and merging.
+The user-visible `max_contigs` limit is applied only when final contigs are
+written.  This separation is essential: limiting raw attempts before merging
+silently prevents later components from contributing an otherwise valid bridge.
 
-- **No external assembler dependency.** Pure standard library — no compiled extensions, no subprocess management, no non-deterministic third-party graph library behavior to reason about.
-- **Correctness has priority over aggressive heuristics.** Every fallback mechanism (internal anchoring, collective rescue) is deliberately ordered *after* the safest, most conservative option succeeds or is exhausted, and every optimization is validated against a fixed-output-digest regression before being accepted.
-- **Validated on real data, not just synthetic benchmarks.** The synthetic test suite (unit tests covering overlap detection, chimeric-merge safety, deterministic tie-breaking, multiprocessing config propagation, and more) is paired with forensic analysis against real sequencing data to catch failure modes synthetic tests structurally cannot — asymmetric read-length distributions, platform-specific adapter constructs, and genuinely pathological real-world depth outliers.
-- **Accuracy claims are measured, not assumed.** A mock community with fully known reference sequences is used to directly measure per-base identity and chimera rate rather than relying on community-composition plausibility alone, and every QC preset's yield/accuracy trade-off is reported from that measurement. Several plausible-sounding improvements were implemented and specifically rejected when they did not measurably help on held-out ground truth — including whole-UMI removal for suspected read mixing, indel-tolerant overlap scoring, and homopolymer-aware assembly — rather than being kept on the strength of intuition alone.
+The collective step may use reads consumed by earlier raw-component attempts as
+evidence, but an accepted extension must consume at least one currently unused
+read.  This progress invariant prevents repeated evidence-only extension in
+repetitive input.
 
-## Status
+### Candidate indexing and computational complexity
 
-Actively used in production for per-UMI 16S rRNA amplicon and metagenomic fragment reconstruction at multi-million-UMI scale, with production QC layers (pre-assembly read-quality filtering, post-assembly chimera detection, diversity-adaptive presets) validated against a mock community with fully known reference sequences.
+Naive greedy OLC repeatedly scans every remaining read, giving a practical
+floor near O(attempts x pool size) on poor pools.  `denovo_OLC` builds a
+boundary-k-mer index once per UMI and queries only reads that can satisfy the
+existing mandatory k-mer prefilter.  The subsequent overlap validation and
+candidate order remain unchanged.  On a documented pathological barcode, this
+reduced assembly time from 100.2 s to 5.07 s (11.7x) with byte-identical output
+relative to the unindexed implementation; the optimization changes search cost,
+not acceptance semantics.
 
+### k-mer policy
+
+Short k-mers increase sensitivity to weak or short overlap evidence, but also
+increase the number of coincidental candidates.  Longer k-mers reduce candidate
+traffic and are therefore faster and more specific at the discovery stage, but
+can miss a true overlap before it reaches the final verification step.  The
+current production OLC boundary prefilter uses k=10; collective rescue uses a
+strict 17-mer anchor.  An experimental `k=17 -> k=10` adaptive mode first runs
+the strict path and retries the complete UMI with k=10 only if the strict path
+produces no valid contig.  It does not combine contig pools or choose a result
+merely because it is longer.
+
+In 2,000-barcode tests, Zymo mean identity was 94.13%, 94.15%, and 94.15% for
+k=10, k=17, and adaptive k=17->10, respectively; soil junction-suspect rates
+were 33.45% and 33.30% for k=10 and k=17.  These differences are within the
+observed noise range.  k=17 was approximately 6% faster on the 2,000-UMI test,
+but a production-default change requires a larger evaluation that covers the
+full depth distribution.
+
+### Graph-aware ML read-quality filtering
+
+Before assembly, reads with an ungapped overlap identity below 0.90 are linked
+by a conflict edge within their barcode.  The baseline filter greedily removes
+the highest-degree vertices until no conflict edges remain.  This operation is
+best interpreted as a read-quality filter: it preferentially removes
+indel/error-rich reads, not proven contaminants or foreign molecules.
+
+For ML experiments, a LightGBM regressor was trained on Zymo read identity to
+known references.  Features included quality summaries, read length,
+homopolymer statistics, minimizer spacing, pool depth, and the fraction of
+within-UMI k-mers supported by other reads.  Splits were grouped by barcode to
+avoid pool-level feature leakage.  The model achieved five-fold MAE 2.10 versus
+8.48 for a global-mean baseline, but this was not sufficient to justify a
+standalone deployment.
+
+Two integrations were evaluated:
+
+* **Rejected: global ML ranking.** Removing the globally lowest-scoring reads
+  at the same 13.6% removal rate gave mean contig identity 94.30%, versus
+  95.05% for the graph-only filter.  Accurate single-read identity prediction
+  is not the same decision as selecting the read that harms a particular UMI.
+* **Supported: ML in the graph.** The graph structure and primary degree rule
+  are preserved.  Only equal-degree vertices are ordered by predicted identity,
+  removing the lower-scoring read first.  On 3,000 held-out barcodes, the method
+  retained the 13.58% removal rate and increased mean identity to 95.22%.
+
+An additional speed/quality experiment applied ML as an O(n) pretrim before the
+bounded O(n^2) graph.  Removing the eight lowest-scoring candidates before
+graph construction reduced pairwise comparisons 54.7% and yielded 95.28% mean
+identity in that evaluation.  This is a promising operating point, but it has
+not yet been validated across additional sample types; it should be treated as
+an evaluated candidate rather than an unconditional production default.
+
+## Results
+
+### Correct component semantics recover read-supported sequence
+
+On the fixed 20,000-UMI benchmark, moving the contig cap to final output and
+allowing all raw components to reach post-assembly merging increased total
+contigs from 69,596 to 124,240 and >=1 kb contigs from 16,908 to 21,139.
+There were 2,349 barcodes with a longer primary contig.  Of these lengthened
+contigs, 2,333 (99.3%) had >=95% one-fold read-back breadth and 2,312 (98.4%)
+had >=80% two-fold breadth.  These results support the semantic correction, but
+they do not prove every long extension correct; one-end-supported and breadth
+regression cohorts remain explicit review targets.
+
+### Collective rescue improves but does not erase the OLC--graph gap
+
+Against a matched set of 5,720 barcodes with >=1 kb MEGAHIT output, the fraction
+of OLC primary contigs at least as long as the MEGAHIT contig increased from
+23.0% to 68.2% after collective rescue.  This is a structural comparison, not a
+truth claim: both OLC-longer and MEGAHIT-longer cases require raw-read evidence.
+Representative failures showed that MEGAHIT paths could have continuous,
+full-length raw-read coverage while pairwise OLC remained near read length.
+Collective pileup rescued part of this gap without globally relaxing mismatch
+thresholds, but it does not make greedy OLC equivalent to a de Bruijn graph.
+
+### Graph-aware ML improves quality only when constrained by local structure
+
+The graph-only quality filter increased mean Zymo contig identity from 94.16%
+without filtering to 95.05%.  A stand-alone ML filter was substantially worse at
+the same removal rate, despite strong cross-validation on the surrogate label.
+By contrast, retaining the graph and introducing ML only as a degree tie-breaker
+increased mean identity to 95.22%.  The benefit was distributed across barcodes:
+among 2,997 paired assemblies, the hybrid was better for 370 (12.3%), the
+graph-only filter better for 241 (8.0%), and 2,386 (79.6%) tied.
+
+This result supports a specific claim: ML can improve read filtering when it
+augments a molecular-evidence graph, not when it replaces its within-UMI
+structure with independent global scores.
+
+## Discussion
+
+`denovo_OLC` is intentionally a hybrid evidence system.  Ordinary barcode pools
+take a fast, deterministic OLC path.  Difficult pools gain conservative
+internal-anchor and multi-read rescue rather than a globally relaxed mismatch
+threshold.  This preserves speed and limits the opportunity for unsupported
+joins, but it also leaves a known limitation: local evidence aggregation is not
+a full de Bruijn graph and cannot recover every error-obscured path.
+
+The ML results illustrate an analogous design principle.  A model can predict
+read identity accurately and still make a poor assembly decision if it ignores
+the local conflict structure.  In contrast, using predicted quality only after
+the graph has identified a genuine decision tie gives a small, reproducible
+quality gain with minimal algorithmic disruption.  The more aggressive ML
+pretrim provides a larger measured reduction in pairwise work, but its higher
+read-removal rate and limited cross-sample validation warrant caution.
+
+Several plausible interventions were tested and rejected: whole-UMI removal,
+global mismatch relaxation, single-minimizer deduplication, homopolymer
+compression, and standalone ML ranking.  These negative findings are part of
+the method, not omissions.  They constrain future development toward
+evidence-preserving local graph/bridge rescue, better indel-aware validation,
+and external validation across library types.
+
+## Limitations
+
+* Zymo is the only complete reference-truth cohort; soil supports
+  reference-free validation but not direct base-level accuracy measurement.
+* Read-back coverage alone cannot validate every join.  Junction-spanning
+  evidence is more discriminative, but it is a risk signal rather than a proof
+  of absence of chimera.
+* The reported ML experiments require quality-bearing input and a trained model;
+  the model artefact and its integrations are not represented by this minimal
+  standalone repository.
+* Results for k=17 and adaptive fallback do not yet meet the pre-specified
+  20,000-UMI, full-depth-distribution threshold for changing the production
+  default.
+
+## Code and data availability
+
+The maintained implementation and workflow are in the
+[LFR pipeline denovo module](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo).
+This repository is a release-oriented description of the method.  Benchmark
+details, failed hypotheses, and decision records are documented in
+[`tech_notes.md`](tech_notes.md).
