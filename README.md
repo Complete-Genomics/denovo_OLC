@@ -6,7 +6,7 @@ Barcode-partitioned SE600 libraries contain small pools of single-end reads that
 originate predominantly from one physical DNA molecule.  Per-UMI assembly must
 therefore work with sparse, heterogeneous pools at million-UMI scale, while
 remaining robust to read-end artefacts and independent sequencing errors.  We
-developed `denovo_OLC`, a deterministic, in-process overlap-layout-consensus
+developed [denovo_OLC](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo), a deterministic, in-process overlap-layout-consensus
 (OLC) assembler for this setting.  The assembler combines boundary-k-mer
 candidate indexing, conservative verified overlaps, internal-anchor recovery,
 and a multi-read pileup rescue that is invoked only after ordinary pairwise
