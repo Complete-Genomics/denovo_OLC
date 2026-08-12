@@ -11,19 +11,20 @@ developed [denovo_OLC](https://github.com/Complete-Genomics/LFR_Pipeline/tree/ma
 candidate indexing, conservative verified overlaps, internal-anchor recovery,
 and a multi-read pileup rescue that is invoked only after ordinary pairwise
 extension fails.  A separate, pre-assembly read-quality stage represents
-within-UMI read disagreement as a conflict graph.  A learned per-read identity
-score improves this graph method when used as a *tie-breaker* rather than as a
-stand-alone filter: on a held-out 3,000-barcode Zymo evaluation set, mean
-contig identity increased from 95.05% with the graph-only filter to 95.22%
-with graph-plus-ML tie-breaking at essentially identical removal rate.
+within-UMI read disagreement as a conflict graph.  The best tested ML
+integration uses a learned per-read identity score as an O(n) prefilter before
+the bounded O(n^2) graph: on a held-out 3,000-barcode Zymo evaluation set,
+removing the eight lowest-scoring reads per capped pool reduced pairwise
+comparisons by 54.7% and increased mean contig identity from 95.05% to 95.28%.
 
 The work also establishes important negative results.  Direct pairwise OLC is
 less tolerant than a de Bruijn graph to redundant reads carrying independent
 errors; globally relaxing the mismatch threshold is not a safe remedy.
 Likewise, a standalone ML ranker had strong cross-validation accuracy but was
 inferior to the conflict graph as an assembly decision rule.  The resulting
-design retains local graph structure as the safety-critical decision mechanism
-and uses ML only where its per-read estimate adds information.  On a fixed
+design retains local graph structure as the safety-critical decision mechanism:
+ML removes globally poor reads, then the graph resolves the remaining local
+conflicts.  On a fixed
 20,000-UMI benchmark, correcting raw-component/merge/output semantics increased
 the number of >=1 kb contigs from 16,908 to 21,139; 99.3% of lengthened primary
 contigs had >=95% one-fold read-back breadth.
@@ -52,8 +53,8 @@ the stalled cases that need it.
 A second challenge is read selection.  A read may be intrinsically low quality,
 but whether removing it improves an assembly depends on its disagreement with
 the *other reads in the same UMI*.  This distinction motivates a graph-aware ML
-design: ML is not used to replace the graph with global per-read ranking; it is
-used to resolve otherwise arbitrary choices inside a conflict graph.
+design: ML removes a limited number of globally poor reads first, then the
+conflict graph resolves the remaining pool-specific disagreements.
 
 ## Materials and methods
 
@@ -153,23 +154,29 @@ avoid pool-level feature leakage.  The model achieved five-fold MAE 2.10 versus
 8.48 for a global-mean baseline, but this was not sufficient to justify a
 standalone deployment.
 
-Two integrations were evaluated:
+Three integrations were evaluated:
 
 * **Rejected: global ML ranking.** Removing the globally lowest-scoring reads
   at the same 13.6% removal rate gave mean contig identity 94.30%, versus
   95.05% for the graph-only filter.  Accurate single-read identity prediction
   is not the same decision as selecting the read that harms a particular UMI.
-* **Supported: ML in the graph.** The graph structure and primary degree rule
+* **Useful but secondary: ML in the graph.** The graph structure and primary degree rule
   are preserved.  Only equal-degree vertices are ordered by predicted identity,
   removing the lower-scoring read first.  On 3,000 held-out barcodes, the method
   retained the 13.58% removal rate and increased mean identity to 95.22%.
+* **Preferred: ML prefilter followed by the conflict graph (scheme B).** Before
+  graph construction, ML removes the eight lowest-scoring reads from each
+  candidate pool (capped at 25 reads); the unchanged graph then makes the final
+  conflict-aware decisions.  This reduced pairwise comparisons by 54.7% and
+  yielded 95.28% mean identity, exceeding both graph-only filtering (95.05%)
+  and ML tie-breaking (95.22%) in the same evaluation.  The division of labor is
+  complementary: ML removes globally poor reads, while the graph identifies
+  reads whose removal resolves a specific within-UMI conflict.
 
-An additional speed/quality experiment applied ML as an O(n) pretrim before the
-bounded O(n^2) graph.  Removing the eight lowest-scoring candidates before
-graph construction reduced pairwise comparisons 54.7% and yielded 95.28% mean
-identity in that evaluation.  This is a promising operating point, but it has
-not yet been validated across additional sample types; it should be treated as
-an evaluated candidate rather than an unconditional production default.
+Scheme B is the preferred evaluated operating point, but not yet an
+unconditional production default: it removes 24.48% of candidate reads versus
+13.59% for the graph-only baseline and has not been replicated across additional
+sample types.
 
 ## Results
 
@@ -195,19 +202,24 @@ full-length raw-read coverage while pairwise OLC remained near read length.
 Collective pileup rescued part of this gap without globally relaxing mismatch
 thresholds, but it does not make greedy OLC equivalent to a de Bruijn graph.
 
-### Graph-aware ML improves quality only when constrained by local structure
+### ML prefilter plus conflict graph gives the best measured quality--speed trade-off
 
 The graph-only quality filter increased mean Zymo contig identity from 94.16%
 without filtering to 95.05%.  A stand-alone ML filter was substantially worse at
 the same removal rate, despite strong cross-validation on the surrogate label.
-By contrast, retaining the graph and introducing ML only as a degree tie-breaker
-increased mean identity to 95.22%.  The benefit was distributed across barcodes:
-among 2,997 paired assemblies, the hybrid was better for 370 (12.3%), the
-graph-only filter better for 241 (8.0%), and 2,386 (79.6%) tied.
+The best tested strategy was scheme B: remove the eight lowest-scoring reads per
+capped pool using ML, then apply the unchanged conflict graph.  It reduced
+pairwise comparisons by 54.7% and increased mean identity to 95.28%, at a
+24.48% read-removal rate.  In 2,997 paired barcodes, scheme B was better than
+the graph-only filter for 805 (26.9%), worse for 516 (17.2%), and tied for
+1,676 (55.9%).
 
-This result supports a specific claim: ML can improve read filtering when it
-augments a molecular-evidence graph, not when it replaces its within-UMI
-structure with independent global scores.
+ML tie-breaking inside the graph was also positive (95.22% at 13.58% removal),
+but scheme B was preferable in this evaluation because it achieved a slightly
+higher identity while removing more than half of pairwise graph work.  The
+result supports a specific claim: ML can improve read filtering when it
+augments a molecular-evidence graph, not when it replaces local structure with
+independent global scores.
 
 ## Discussion
 
@@ -220,11 +232,11 @@ a full de Bruijn graph and cannot recover every error-obscured path.
 
 The ML results illustrate an analogous design principle.  A model can predict
 read identity accurately and still make a poor assembly decision if it ignores
-the local conflict structure.  In contrast, using predicted quality only after
-the graph has identified a genuine decision tie gives a small, reproducible
-quality gain with minimal algorithmic disruption.  The more aggressive ML
-pretrim provides a larger measured reduction in pairwise work, but its higher
-read-removal rate and limited cross-sample validation warrant caution.
+the local conflict structure.  The best tested division of labor is scheme B:
+ML first removes a small, fixed set of globally poor reads, after which the graph
+retains authority over local conflict resolution.  This improves both measured
+identity and pairwise cost, but its higher read-removal rate and limited
+cross-sample validation warrant caution.
 
 Several plausible interventions were tested and rejected: whole-UMI removal,
 global mismatch relaxation, single-minimizer deduplication, homopolymer
