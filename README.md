@@ -76,6 +76,44 @@ interior position with locally verified sequence identity on both sides; it is
 designed to distinguish real spanning evidence from a superficial k-mer
 placement across a putative chimera join.
 
+### Workflow overview
+
+Figure 1 summarizes the full workflow; its canonical Mermaid source is
+[`workflow.mmd`](workflow.mmd).  Solid paths describe the implemented SE
+workflow.  The ML prefilter and Racon branches are optional evaluated paths,
+not unconditional production defaults.  In particular, the anomaly gate runs
+before assembly: only an SE sample with adverse Zymo-relative depth and
+read-length drift *and* a safe projected retained depth is salvaged.  Other
+samples, and all PE samples in `auto` mode, retain their original read pools.
+
+```mermaid
+flowchart TD
+    A[Input FASTQ with read qualities] --> B[Adapter trimming and barcode grouping]
+    B --> C[Barcode-grouped read TSV]
+    C --> D{Sample anomaly gate\nZymo-relative depth and length drift\nplus retained-depth safety}
+    D -->|normal, report-only, or PE| E[Original per-UMI read pools]
+    D -->|SE salvage| F[Remove reads under 300 bp\nkeep first 300 eligible reads per UMI]
+    F --> E
+
+    E --> G{Optional ML prefilter\ntrained model available}
+    G -->|off or graph-only production path| H[Conflict-graph read-quality filtering]
+    G -->|scheme B, evaluated| I[Score reads and remove K lowest-scoring\nreads from capped candidate pool]
+    I --> H
+    H --> J[Per-UMI OLC\nboundary k-mer, verified overlaps,\ninternal anchors, collective rescue]
+    J --> K[Draft contigs]
+
+    K --> L{Optional Racon polishing\npilot / validation path}
+    E -. read pool, up to 50 reads in pilot .-> L
+    L -->|off| M[Contigs and read-back / junction QC]
+    L -->|on| N[minimap2 read-to-contig alignment\nRacon partial-order consensus]
+    N --> M
+
+    classDef production fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
+    classDef optional fill:#fff8e1,stroke:#ef6c00,color:#e65100;
+    class D,E,F,H,J,K,M production;
+    class G,I,L,N optional;
+```
+
 ### OLC assembly
 
 For one barcode, unique reads are sorted deterministically by decreasing length
