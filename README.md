@@ -215,7 +215,7 @@ unconditional production default: it removes 24.48% of candidate reads versus
 13.59% for the graph-only baseline and has not been replicated across additional
 sample types.
 
-### Optional Racon polishing and factorial ablation
+### Racon polishing and factorial ablation
 
 For the polishing pilot, up to 50 reads from the original per-UMI pool were
 aligned back to each draft contig with `minimap2 -x sr` and passed to Racon for
