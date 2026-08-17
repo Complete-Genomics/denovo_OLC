@@ -216,6 +216,17 @@ unconditional production default: it removes 24.48% of candidate reads versus
 13.59% for the graph-only baseline and has not been replicated across additional
 sample types.
 
+### Optional Racon polishing and factorial ablation
+
+For the polishing pilot, up to 50 reads from the original per-UMI pool were
+aligned back to each draft contig with `minimap2 -x sr` and passed to Racon for
+partial-order consensus.  A contig with no usable read-to-contig alignment was
+passed through unchanged.  The experiment used a 2 x 2 factorial design:
+plain or ML tie-break draft, with or without Racon.  Thus the combined
+Racon(ML-draft)-versus-plain comparison is an end-to-end arm, while the four
+arms together constitute the ablation that separates each contribution and
+their interaction.  This pilot evaluates the ML tie-break draft, not scheme B.
+
 ## Results
 
 ### Correct component semantics recover read-supported sequence
@@ -258,6 +269,34 @@ higher identity while removing more than half of pairwise graph work.  The
 result supports a specific claim: ML can improve read filtering when it
 augments a molecular-evidence graph, not when it replaces local structure with
 independent global scores.
+
+### Factorial ablation shows that ML and Racon gains are largely additive
+
+The Racon(ML-draft)-versus-plain result is an end-to-end comparison, but not by
+itself an ablation: it changes both draft selection and polishing.  The
+complete 2 x 2 Zymo experiment resolves that ambiguity on 4,998 matched
+barcodes with known-reference scoring:
+
+| Draft selection | Polishing | Mean identity | Difference from plain raw |
+|---|---|---:|---:|
+| plain | none | 94.9698 | -- |
+| ML tie-break | none | 95.1632 | +0.1934 |
+| plain | Racon | 96.7406 | +1.7708 |
+| ML tie-break | Racon | 96.9022 | **+1.9324** |
+
+Racon(ML draft) remained 0.1616 identity points above Racon(plain draft)
+(Wilcoxon p = 6.87e-13).  Therefore approximately 84% of the raw ML gain
+remained after polishing; only 0.0318 points were overlapping benefit.  The
+result supports complementary mechanisms: ML changes which reads form the
+draft, whereas Racon corrects bases through read-to-contig realignment and
+partial-order consensus.
+
+The same combined arm was tested on 2,970 matched hs8 barcodes using a
+fixed-reference local-truth evaluation.  Racon(ML draft) improved mean identity
+by 1.7675 points over plain raw, but its 1.01% severe-loss rate was effectively
+at the pre-specified 1% safety boundary.  Racon is therefore a promising
+post-assembly stage, not yet a production default; larger field-sample
+validation is required before enabling the combined path.
 
 ## Discussion
 
