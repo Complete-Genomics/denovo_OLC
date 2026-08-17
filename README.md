@@ -321,19 +321,6 @@ the method, not omissions.  They constrain future development toward
 evidence-preserving local graph/bridge rescue, better indel-aware validation,
 and external validation across library types.
 
-## Limitations
-
-* Zymo is the only complete reference-truth cohort; soil supports
-  reference-free validation but not direct base-level accuracy measurement.
-* Read-back coverage alone cannot validate every join.  Junction-spanning
-  evidence is more discriminative, but it is a risk signal rather than a proof
-  of absence of chimera.
-* The reported ML experiments require quality-bearing input and a trained model;
-  the model artefact and its integrations are not represented by this minimal
-  standalone repository.
-* Results for k=17 and adaptive fallback do not yet meet the pre-specified
-  20,000-UMI, full-depth-distribution threshold for changing the production
-  default.
 
 ## Code and data availability
 
