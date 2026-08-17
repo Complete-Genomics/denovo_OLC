@@ -78,9 +78,8 @@ placement across a putative chimera join.
 
 ### Workflow overview
 
-Figure 1 summarizes the full workflow; its canonical Mermaid source is
-[`workflow.mmd`](workflow.mmd).  Solid paths describe the implemented SE
-workflow.  The ML prefilter and Racon branches are optional evaluated paths,
+Figure 1 summarizes the full workflow.  Solid paths describe the implemented
+SE workflow.  The ML prefilter and Racon branches are optional evaluated paths,
 not unconditional production defaults.  In particular, the anomaly gate runs
 before assembly: only an SE sample with adverse Zymo-relative depth and
 read-length drift *and* a safe projected retained depth is salvaged.  Other
