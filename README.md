@@ -4,13 +4,7 @@
 
 We present [denovo_OLC](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo), a deterministic per-UMI OLC assembler for sparse SE600 linked-read pools.  Boundary-k-mer indexing, conservative overlap verification, internal-anchor recovery, and collective pileup rescue improve extension without globally relaxing mismatch thresholds.  A learned read-quality prefilter reduces the bounded conflict-graph workload while preserving graph-based decisions.
 
-On a 20,000-UMI benchmark, corrected component/merge semantics increased >=1 kb
-contigs from 16,908 to 21,139, with 99.3% of lengthened contigs achieving
->=95% one-fold read-back breadth.  Post-assembly Racon polishing of ML-selected
-drafts yielded a +1.77-point mean identity gain and an 11.41% severe-gain rate
-on small scale UMI tests.  The combined ML+Racon path is therefore suitable for
-controlled canary deployment; its 1.01% severe-loss rate means default
-production use should await larger multi-sample validation.
+On a 20,000-UMI benchmark, corrected component/merge semantics increased >=1 kb contigs from 16,908 to 21,139, with 99.3% of lengthened contigs achieving >=95% one-fold read-back breadth. Post-assembly Racon polishing of ML-selected drafts yielded a +1.77-point mean identity gain and an 11.41% severe-gain rate on small scale UMI tests. The combined ML+Racon path is therefore suitable for controlled canary deployment; its 1.01% severe-loss rate means default production use should await larger multi-sample validation.
 
 ## Introduction
 
