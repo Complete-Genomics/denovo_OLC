@@ -83,12 +83,12 @@ flowchart LR
     J --> K[Draft contigs]
 
     K --> L{Optional Racon polishing\npilot / validation path}
-    E -. read pool, up to 50 reads in pilot .-> L
+    E -.->|pilot read pool, up to 50 reads| L
     L -->|off| M[Contigs and read-back / junction QC]
     L -->|on| N[minimap2 read-to-contig alignment\nRacon partial-order consensus]
     N --> M
 
-    AA[Mock-control FASTQ + known reference] -. explicit auto_retrain.smk invocation .-> AB[Cheap feature-drift report]
+    AA[Mock-control FASTQ + known reference<br/>auto_retrain.smk] -.->|explicit invocation| AB[Cheap feature-drift report]
     AB --> AC{Drift verdict}
     AC -->|no_drift or degradation| AD[Keep incumbent\nreport only / investigate run]
     AC -->|drift| AE[Train candidate ML model]
