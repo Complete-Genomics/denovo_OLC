@@ -2,32 +2,15 @@
 
 ## Abstract
 
-Barcode-partitioned SE600 libraries contain small pools of single-end reads that
-originate predominantly from one physical DNA molecule.  Per-UMI assembly must
-therefore work with sparse, heterogeneous pools at million-UMI scale, while
-remaining robust to read-end artefacts and independent sequencing errors.  We
-developed [denovo_OLC](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo), a deterministic, in-process overlap-layout-consensus
-(OLC) assembler for this setting.  The assembler combines boundary-k-mer
-candidate indexing, conservative verified overlaps, internal-anchor recovery,
-and a multi-read pileup rescue that is invoked only after ordinary pairwise
-extension fails.  A separate, pre-assembly read-quality stage represents
-within-UMI read disagreement as a conflict graph.  The best tested ML
-integration uses a learned per-read identity score as an O(n) prefilter before
-the bounded O(n^2) graph: on a held-out 3,000-barcode Zymo evaluation set,
-removing the eight lowest-scoring reads per capped pool reduced pairwise
-comparisons by 54.7% and increased mean contig identity from 95.05% to 95.28%.
+We present [denovo_OLC](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo), a deterministic per-UMI OLC assembler for sparse SE600 linked-read pools.  Boundary-k-mer indexing, conservative overlap verification, internal-anchor recovery, and collective pileup rescue improve extension without globally relaxing mismatch thresholds.  A learned read-quality prefilter reduces the bounded conflict-graph workload while preserving graph-based decisions.
 
-The work also establishes important negative results.  Direct pairwise OLC is
-less tolerant than a de Bruijn graph to redundant reads carrying independent
-errors; globally relaxing the mismatch threshold is not a safe remedy.
-Likewise, a standalone ML ranker had strong cross-validation accuracy but was
-inferior to the conflict graph as an assembly decision rule.  The resulting
-design retains local graph structure as the safety-critical decision mechanism:
-ML removes globally poor reads, then the graph resolves the remaining local
-conflicts.  On a fixed
-20,000-UMI benchmark, correcting raw-component/merge/output semantics increased
-the number of >=1 kb contigs from 16,908 to 21,139; 99.3% of lengthened primary
-contigs had >=95% one-fold read-back breadth.
+On a 20,000-UMI benchmark, corrected component/merge semantics increased >=1 kb
+contigs from 16,908 to 21,139, with 99.3% of lengthened contigs achieving
+>=95% one-fold read-back breadth.  Post-assembly Racon polishing of ML-selected
+drafts yielded a +1.77-point mean identity gain and an 11.41% severe-gain rate
+on small scale UMI tests.  The combined ML+Racon path is therefore suitable for
+controlled canary deployment; its 1.01% severe-loss rate means default
+production use should await larger multi-sample validation.
 
 ## Introduction
 
