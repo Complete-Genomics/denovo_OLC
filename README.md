@@ -59,15 +59,19 @@ Figure 1 summarizes the full workflow.  Solid paths describe the implemented
 SE workflow.  The ML prefilter and Racon branches are optional evaluated paths,
 not unconditional production defaults.  In particular, the anomaly gate runs
 before assembly: only an SE sample with adverse Zymo-relative depth and
-read-length drift *and* a safe projected retained depth is salvaged.  Other
-samples, and all PE samples in `auto` mode, retain their original read pools.
+read-length drift *and* a safe projected retained depth is salvaged; otherwise
+the original SE read pool is retained.
+The model-retraining branch is separate: `auto_retrain.smk` is not included by
+the main production workflow and must be invoked explicitly.  When invoked, a
+cheap drift report runs first; only a `drift` verdict starts candidate training,
+assembly/read-back A/B testing, and the final promotion gate.
 
 ```mermaid
 flowchart LR
     A[Input FASTQ with read qualities] --> B[Adapter trimming and barcode grouping]
     B --> C[Barcode-grouped read TSV]
     C --> D{Sample anomaly gate\nZymo-relative depth and length drift\nplus retained-depth safety}
-    D -->|normal, report-only, or PE| E[Original per-UMI read pools]
+    D -->|normal or report-only| E[Original per-UMI read pools]
     D -->|SE salvage| F[Remove reads under 300 bp\nkeep first 300 eligible reads per UMI]
     F --> E
 
@@ -84,10 +88,19 @@ flowchart LR
     L -->|on| N[minimap2 read-to-contig alignment\nRacon partial-order consensus]
     N --> M
 
+    AA[Mock-control FASTQ + known reference] -. explicit auto_retrain.smk invocation .-> AB[Cheap feature-drift report]
+    AB --> AC{Drift verdict}
+    AC -->|no_drift or degradation| AD[Keep incumbent\nreport only / investigate run]
+    AC -->|drift| AE[Train candidate ML model]
+    AE --> AF[Incumbent vs candidate\nassembly and read-back A/B]
+    AF --> AG{Promotion gate}
+    AG -->|pass| AH[Update models/in_use.lgb]
+    AG -->|fail| AD
+
     classDef production fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
     classDef optional fill:#fff8e1,stroke:#ef6c00,color:#e65100;
     class D,E,F,H,J,K,M production;
-    class G,I,L,N optional;
+    class G,I,L,N,AA,AB,AC,AD,AE,AF,AG,AH optional;
 ```
 
 ### OLC assembly
@@ -235,7 +248,7 @@ the same removal rate, despite strong cross-validation on the surrogate label.
 The best tested strategy was scheme B: remove the eight lowest-scoring reads per
 capped pool using ML, then apply the unchanged conflict graph.  It reduced
 pairwise comparisons by 54.7% and increased mean identity to 95.28%, at a
-24.48% read-removal rate.  In 2,997 paired barcodes, scheme B was better than
+24.48% read-removal rate.  In 2,997 matched barcodes, scheme B was better than
 the graph-only filter for 805 (26.9%), worse for 516 (17.2%), and tied for
 1,676 (55.9%).
 
