@@ -96,6 +96,7 @@ flowchart LR
     AF --> AG{Promotion gate}
     AG -->|pass| AH[Update models/in_use.lgb]
     AG -->|fail| AD
+    AH -.->|next production run model handoff| G
 
     classDef production fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
     classDef optional fill:#fff8e1,stroke:#ef6c00,color:#e65100;
