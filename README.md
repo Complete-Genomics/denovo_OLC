@@ -87,7 +87,7 @@ read-length drift *and* a safe projected retained depth is salvaged.  Other
 samples, and all PE samples in `auto` mode, retain their original read pools.
 
 ```mermaid
-flowchart TD
+flowchart LR
     A[Input FASTQ with read qualities] --> B[Adapter trimming and barcode grouping]
     B --> C[Barcode-grouped read TSV]
     C --> D{Sample anomaly gate\nZymo-relative depth and length drift\nplus retained-depth safety}

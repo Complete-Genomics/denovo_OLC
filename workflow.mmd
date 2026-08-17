@@ -1,4 +1,4 @@
-flowchart TD
+flowchart LR
     A[Input FASTQ with read qualities] --> B[Adapter trimming and barcode grouping]
     B --> C[Barcode-grouped read TSV]
     C --> D{Sample anomaly gate\nZymo-relative depth and length drift\nplus retained-depth safety}
