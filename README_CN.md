@@ -4,7 +4,7 @@
 
 我们提出 [denovo_OLC](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo)：一个面向稀疏 SE600 linked-read 池的确定性、逐 UMI OLC 组装器。边界 k-mer 索引、保守的重叠验证、内部锚点恢复和 collective pileup rescue 能在不全局放宽 mismatch 阈值的前提下改善延伸。学习得到的 read 质量预筛在保留图结构决策的同时，降低有界 conflict graph 的计算负担。
 
-在 20,000-UMI benchmark 中，修正 component/merge 语义后，长度 >=1 kb 的 contig 从 16,908 增至 21,139；其中 99.3% 的变长 contig 具有 >=95% 的单层 read-back breadth。对 ML 选择的 draft 进行组装后 Racon polishing，在小规模 UMI 测试中带来 +1.77 个 identity 点的平均增益和 11.41% 的严重增益率，但仍是验证路径而非生产默认。另一个 candidate-chimera GBDT 仅以 shadow sidecar 接入：它记录规则已选择 contig 的风险分数，观测更多样品后决定是否上线。
+在 20,000-UMI benchmark 中，修正 component/merge 语义后，长度 >=1 kb 的 contig 从 16,908 增至 21,139；其中 99.3% 的变长 contig 具有 >=95% 的单层 read-back breadth。对 ML 选择的 draft 进行组装后 Racon polishing，在小规模 UMI 测试中带来 +1.77 个 identity 点的平均增益和 11.41% 的严重增益率；它最初被评估作为 gated-switch 候选选择 severe-loss 风险的修复方案，但一个更廉价的规则改动（提高选择 gate 的 read 支持阈值）在不需要任何 polishing 步骤的情况下解决了同一个风险，因此 Racon 未被继续推进到生产环境（2026-08-21）。在收紧后的 gate 下，gated-switch 选择已在两个评估队列上都得到验证，目前仍是 opt-in，等待更广泛的现场部署。另一个 candidate-chimera GBDT 仅以 shadow sidecar 接入；六条让它在选择中发挥主动作用的路径均因同一个结构性失效模式而被关闭。
 
 ## 引言
 
@@ -47,13 +47,13 @@ flowchart LR
     O --> P{候选选择\nlongest 默认；gated switch opt-in}
     P --> Q[规则选择的 contig]
 
-    Q --> L{可选 Racon polishing\npilot / 验证路径}
+    Q --> L{可选 Racon polishing\npilot / 已评估，未采纳}
     E -.->|pilot read pool，最多 50 条 reads| L
     L -->|关闭| M[交付 contigs 与 read-back / junction QC]
     L -->|开启| N[minimap2 read-to-contig 比对\nRacon partial-order consensus]
     N --> M
 
-    O -.-> R[Shadow GBDT：P(chimera)\n仅评分规则选择的 contig]
+    O -.-> R["Shadow GBDT：P(chimera)\n仅评分规则选择的 contig"]
     P -.-> R
     R -.-> S[Shadow reports：分数分布、\n规则分歧与人工复检队列]
 
@@ -120,9 +120,9 @@ Scheme B 是当前首选的已评估 operating point，但尚非无条件生产�
 
 ### 候选选择与 shadow 监控
 
-生产兼容的候选选择器默认保持历史 `longest` 行为。`candidate_select: gated_switch` 是 opt-in：它按 rank 选择第一个通过配置 junction gate（`span_cov_ratio >= 0.25` 且有足够 placed reads）的候选；若没有候选通过，则回退 primary candidate。该规则尚未成为默认，因为未 polish 的 severe-loss 在不同验证队列中并不一致。
+生产兼容的候选选择器默认保持历史 `longest` 行为。`candidate_select: gated_switch` 是 opt-in：它按 rank 选择第一个通过配置 junction gate（`span_cov_ratio >= 0.25` 且 `placed_reads >= 5`）的候选；若没有候选通过，则回退 primary candidate。这个 read 支持阈值从最初的 2 提高到了 5——诊断发现，在较松的 gate 下，未 polish 的 severe-loss（相对 primary candidate 的 identity 掉分 >=5 个百分点）在不同队列间并不一致：在严格的 tail_raw held-out 集上为 3.93%，超过项目 3% 的验收线；而在规模更大的 merged pool 上仅为 1.92%，舒适地低于验收线。将 gate 提高到 `placed_reads >= 5` 后，两个队列都不再依赖任何组装后 polishing 就穿过了这条线（tail_raw 2.10%，merged pool 1.09%），代价是 chimera 率小幅上升（tail_raw 的 decidable 口径 chimera 从 5.52% 涨到 5.65%）以及回退 primary candidate 的比例提高。Racon polishing 原本是针对同一个 severe-loss 缺口计划中的修复方案，被这次更廉价的规则改动取代，未被继续投入生产。在这个默认值最终确定前，一次 3,000-UMI 的 hs8 端到端 canary 已经在真实、非 mock 的数据上验证过完整 opt-in DAG（候选选择、全部候选的 junction QC、shadow 打分、下游 QC），确认相关 Snakemake 依赖在两个 Zymo 评估队列之外同样能正确解析。
 
-配置 `shadow_score_model` 后，全部候选的 junction QC 与选择记录会输入冻结的 GBDT。模型只对规则实际交付的 contig 打分并写监控报告；没有任何下游 workflow rule 读取该分数。hs8 的 3,000-UMI integration run 已完成这份完整契约（2,964 个进入组装的 UMI）；GBDT 与 gated rule 在 89.71% 的交付上分歧。这个分歧是监控信号，不是模型应接管选择的证据。Shadow 的作用是在无参考真值的新批次上积累分数分布、规则分歧和可人工复检的高风险案例。
+六条让模型在候选选择中发挥主动作用的路径均已评估并关闭：不受约束的模型驱动重新选择（severe-loss 15.94%，是规则自身的四倍）；结合长度与 read 支持阈值的 gate 护栏扫描（174 个操作点里没有一个能同时把 severe-loss 压到 <=3% 且 chimera 率优于 gated-switch 规则本身）；只能降级规则自身选择的非对称 veto（增益可忽略，仅 -0.06 个百分点）；基于回归的置信度目标（oracle 上界低于规则基线）；对同一批特征做的 learning-to-rank 重排序（信号低于 within-UMI 测量噪声下限）；以及一个显式的 contig 完整性分类头（预测长度的 AUC 高达 0.9995，但预测的其实不是 chimera 状态——而且区分方向是反的，按这个指标 chimera 反而系统性地比 clean contig 更"完整"）。六条路径共享同一个失效机制：模型能够自信地标记为 chimera 的候选，恰好也是 read 支持最少、最不适合交付的候选，因此任何让模型从"打分"变成"行动"的策略，都会重现 gate 护栏本身的 severe-loss 问题。因此 `shadow_score_model` 仍是模型唯一经过验证的角色：配置后，全部候选的 junction QC 与选择记录会输入一个冻结的 GBDT，它只对规则实际交付的 contig 打分并写监控报告；没有任何下游 workflow rule 读取这些分数。在 hs8 canary 上，GBDT 与 gated rule 在 89.71% 的交付上存在分歧——这是一个监控信号，不是模型应该接管选择的证据。Shadow 的作用是在缺乏参考真值的新批次上，持续积累分数分布、规则分歧和可供人工复检的高风险案例。
 
 ## 结果
 
@@ -161,7 +161,7 @@ Racon(ML draft) 比 Racon(plain draft) 高 0.1616 个 identity 点（Wilcoxon p 
 
 ML 结果展示了类似的设计原则。模型可以准确预测 read identity，却仍可能在忽略局部 conflict structure 时作出不良组装决策。最佳的已测分工是 scheme B：ML 先移除固定数量的全局低质量 reads，随后由 graph 保留对局部冲突解决的决策权。这同时改善了测得的 identity 和 pairwise cost，但其较高的 read-removal rate 和有限的跨样本验证意味着应谨慎使用。
 
-若干看似合理的干预已被测试并否决：整 UMI 移除、全局 mismatch relaxation、single-minimizer deduplication、homopolymer compression 和 standalone ML ranking。这些负面结果是方法的一部分，而非遗漏；它们将后续开发约束在保留证据的局部 graph/bridge rescue、更好的 indel-aware validation，以及跨 library type 的外部验证上。
+若干看似合理的干预已被测试并否决：整 UMI 移除、全局 mismatch relaxation、single-minimizer deduplication、homopolymer compression、standalone ML ranking，以及——在候选选择阶段——六条让模型在选择"交付哪条 contig"时发挥主动作用的路径（见材料与方法）。这些负面结果是方法的一部分，而非遗漏；它们将后续开发约束在保留证据的局部 graph/bridge rescue、更好的 indel-aware validation，以及跨 library type 的外部验证上。
 
 ## 代码与数据可用性
 
