@@ -4,7 +4,7 @@
 
 We present [denovo_OLC](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo), a deterministic per-UMI OLC assembler for sparse SE600 linked-read pools.  Boundary-k-mer indexing, conservative overlap verification, internal-anchor recovery, and collective pileup rescue improve extension without globally relaxing mismatch thresholds.  A learned read-quality prefilter reduces the bounded conflict-graph workload while preserving graph-based decisions.
 
-On a 20,000-UMI benchmark, corrected component/merge semantics increased >=1 kb contigs from 16,908 to 21,139, with 99.3% of lengthened contigs achieving >=95% one-fold read-back breadth. Post-assembly Racon polishing of ML-selected drafts yielded a +1.77-point mean identity gain and an 11.41% severe-gain rate on small scale UMI tests. The combined ML+Racon path is therefore suitable for controlled canary deployment; its 1.01% severe-loss rate means default production use should await larger multi-sample validation.
+On a 20,000-UMI benchmark, corrected component/merge semantics increased >=1 kb contigs from 16,908 to 21,139, with 99.3% of lengthened contigs achieving >=95% one-fold read-back breadth. Post-assembly Racon polishing of ML-selected drafts yielded a +1.77-point mean identity gain and an 11.41% severe-gain rate on small-scale UMI tests; it was initially evaluated as a fix for the severe-loss risk of gated-switch candidate selection, but a cheaper rule change (raising the read-support threshold of the selection gate) resolved the same risk without any polishing step, so Racon was not carried forward into production. Under the tightened gate, gated-switch selection has been validated on two evaluation cohorts and remains opt-in pending broader field deployment. A separate candidate-chimera GBDT is wired in only as a shadow sidecar; six paths that would have let it act on selection directly were each evaluated and closed for the same underlying failure mode.
 
 ## Introduction
 
@@ -47,8 +47,9 @@ invalid and was explicitly avoided.
 
 For Zymo, contigs and reads were evaluated against the known reference set using
 base-level identity and alignment coverage.  For data without a complete
-reference, we used read-back breadth, verified two-end support, and a
-reference-free junction signal.  The junction signal counts reads that span an
+reference, we used a fixed-reference local-truth proxy, read-back breadth,
+verified read support on both sides of a junction, and a reference-free junction
+signal; these proxies are not base-level truth.  The junction signal counts reads that span an
 interior position with locally verified sequence identity on both sides; it is
 designed to distinguish real spanning evidence from a superficial k-mer
 placement across a putative chimera join.
@@ -57,7 +58,10 @@ placement across a putative chimera join.
 
 Figure 1 summarizes the full workflow.  Solid paths describe the implemented
 SE workflow.  The ML prefilter and Racon branches are optional evaluated paths,
-not unconditional production defaults.  In particular, the anomaly gate runs
+not unconditional production defaults.  Candidate selection defaults to
+`longest`; `gated_switch` is opt-in.  The candidate-chimera GBDT is a
+shadow-only sidecar: it scores and reports after rule-based selection, with no
+edge feeding back into assembly, selection, or delivery.  The anomaly gate runs
 before assembly: only an SE sample with adverse Zymo-relative depth and
 read-length drift *and* a safe projected retained depth is salvaged; otherwise
 the original SE read pool is retained.
@@ -81,12 +85,19 @@ flowchart LR
     I --> H
     H --> J[Per-UMI OLC\nboundary k-mer, verified overlaps,\ninternal anchors, collective rescue]
     J --> K[Draft contigs]
+    K --> O[Junction QC for all candidates\nonly runs when gated switch or shadow is on]
+    O --> P{Candidate selection\nlongest default; gated switch opt-in}
+    P --> Q[Rule-selected contig]
 
-    K --> L{Optional Racon polishing\npilot / validation path}
+    Q --> L{Optional Racon polishing\npilot / evaluated, not adopted}
     E -.->|pilot read pool, up to 50 reads| L
-    L -->|off| M[Contigs and read-back / junction QC]
+    L -->|off| M[Deliver contigs and read-back / junction QC]
     L -->|on| N[minimap2 read-to-contig alignment\nRacon partial-order consensus]
     N --> M
+
+    O -.-> R["Shadow GBDT: P(chimera)\nscores only the rule-selected contig"]
+    P -.-> R
+    R -.-> S[Shadow reports: score distribution,\nrule disagreement, manual-review queue]
 
     AA[Mock-control FASTQ + known reference<br/>auto_retrain.smk] -.->|explicit invocation| AB[Cheap feature-drift report]
     AB --> AC{Drift verdict}
@@ -100,8 +111,10 @@ flowchart LR
 
     classDef production fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
     classDef optional fill:#fff8e1,stroke:#ef6c00,color:#e65100;
-    class D,E,F,H,J,K,M production;
-    class G,I,L,N,AA,AB,AC,AD,AE,AF,AG,AH optional;
+    classDef shadow fill:#e8eaf6,stroke:#3949ab,color:#1a237e;
+    class D,E,F,H,J,K,Q,M production;
+    class G,I,L,N,O,P,AA,AB,AC,AD,AE,AF,AG,AH optional;
+    class R,S shadow;
 ```
 
 ### OLC assembly
@@ -217,6 +230,58 @@ Racon(ML-draft)-versus-plain comparison is an end-to-end arm, while the four
 arms together constitute the ablation that separates each contribution and
 their interaction.  This pilot evaluates the ML tie-break draft, not scheme B.
 
+### Candidate selection and shadow monitoring
+
+The production-compatible candidate selector defaults to the historical
+`longest` behavior.  `candidate_select: gated_switch` is opt-in: it selects,
+in rank order, the first candidate passing a configured junction gate
+(`span_cov_ratio >= 0.25` and `placed_reads >= 5`), falling back to the
+primary candidate if none pass.  This read-support threshold was raised from
+an initial 2 to 5 after diagnosis showed that, under the looser gate,
+unpolished severe-loss (an identity drop of >=5 points relative to the
+primary candidate) was inconsistent across cohorts: 3.93% on the strict
+`tail_raw` held-out set, above the project's 3% acceptance line, versus only
+1.92% on the larger merged pool, comfortably below it.  Raising the gate to
+`placed_reads >= 5` brought both cohorts under the line without relying on
+any post-assembly polishing (tail_raw 2.10%, merged pool 1.09%), at the cost
+of a small chimera-rate increase (decidable-basis chimera on tail_raw rose
+from 5.52% to 5.65%) and a higher primary-candidate fallback rate.  Racon
+polishing had originally been evaluated as the planned fix for this same
+severe-loss gap; it was superseded by this cheaper rule change and was not
+carried forward into production.  Before this default was finalized, a
+3,000-UMI hs8 end-to-end canary validated the complete opt-in DAG (candidate
+selection, junction QC over all candidates, shadow scoring, downstream QC) on
+real, non-mock data, confirming that the relevant Snakemake dependencies
+resolve correctly outside the two Zymo evaluation cohorts as well.
+
+Six paths that would have let the model act directly on candidate selection
+were each evaluated and closed.  Unconstrained model-driven reselection
+produced severe-loss of 15.94%, four times the rule's own rate.  A guardrail
+sweep over length and read-support thresholds (174 operating points) found
+none that simultaneously kept severe-loss <=3% and beat the gated-switch
+rule's chimera rate.  An asymmetric veto restricted to downgrading the rule's
+own selection recovered a negligible gain (only -0.06 points).  A
+regression-based confidence target had an oracle ceiling below the rule
+baseline.  Learning-to-rank reranking on the same features produced a signal
+below the within-UMI measurement noise floor.  And an explicit
+contig-completeness classification head achieved AUC 0.9995 for predicting
+length -- but was not actually predicting chimera status, and its
+discrimination direction was reversed: by this metric chimeras were
+systematically *more* "complete" than clean contigs.  All six paths share the
+same underlying failure mode: the candidates the model can confidently flag
+as chimeric are exactly the candidates with the least read support and the
+least suitability for delivery, so any strategy that lets the model move from
+scoring to acting reproduces the same severe-loss problem the gate guardrail
+itself was built to prevent.  `shadow_score_model` therefore remains the
+model's only validated role: when configured, junction QC over all candidates
+and the selection record feed a frozen GBDT that scores only the contig the
+rule actually delivers and writes a monitoring report; no downstream workflow
+rule reads these scores.  On the hs8 canary, the GBDT disagreed with the
+gated rule on 89.71% of deliveries -- a monitoring signal, not evidence the
+model should take over selection.  Shadow's role is to keep accumulating
+score distributions, rule disagreement rates, and a manual-review queue of
+high-risk cases on new batches that lack reference truth.
+
 ## Results
 
 ### Correct component semantics recover read-supported sequence
@@ -282,11 +347,14 @@ draft, whereas Racon corrects bases through read-to-contig realignment and
 partial-order consensus.
 
 The same combined arm was tested on 2,970 matched hs8 barcodes using a
-fixed-reference local-truth evaluation.  Racon(ML draft) improved mean identity
-by 1.7675 points over plain raw, but its 1.01% severe-loss rate was effectively
-at the pre-specified 1% safety boundary.  Racon is therefore a promising
-post-assembly stage, not yet a production default; larger field-sample
-validation is required before enabling the combined path.
+fixed-reference local-truth proxy: each barcode's local reference was assigned
+once from the no-filter arm.  This method compresses effect sizes and cannot
+reliably rank close alternatives, so the resulting identity is a proxy rather
+than base-level truth.  Racon(ML draft) improved mean proxy identity by 1.7675
+points over plain raw, but its 1.01% severe-loss rate was effectively at the
+pre-specified 1% safety boundary.  Racon is therefore a promising post-assembly
+stage, not yet a production default; larger field-sample validation is required
+before enabling the combined path.
 
 ## Discussion
 
@@ -307,7 +375,9 @@ cross-sample validation warrant caution.
 
 Several plausible interventions were tested and rejected: whole-UMI removal,
 global mismatch relaxation, single-minimizer deduplication, homopolymer
-compression, and standalone ML ranking.  These negative findings are part of
+compression, standalone ML ranking, and -- at the candidate-selection stage --
+six paths that would have let the model act directly on which contig to
+deliver (see Materials and methods).  These negative findings are part of
 the method, not omissions.  They constrain future development toward
 evidence-preserving local graph/bridge rescue, better indel-aware validation,
 and external validation across library types.
