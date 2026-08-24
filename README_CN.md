@@ -20,7 +20,7 @@ Linked-read barcode 提供了天然的组装单元：分配给一个 UMI 的 rea
 
 分析使用按 barcode 分组的 trimmed SE600 linked-read 数据、具有已知参考的 ZymoBIOMICS mock community，以及缺少完整真值参考的高多样性土壤（`hs6`）队列。主要的受控 OLC benchmark 对所有比较运行均使用同一 trimmed 输入中的前 20,000 个 barcodes。比较始终限定在两个输出中实际都存在的 barcode 交集；比较未匹配的完整数据集是无效的，因而被明确避免。
 
-对于 Zymo，contig 和 reads 使用已知参考集的碱基级 identity 与比对覆盖度评估。对于没有完整参考的数据，使用 read-back breadth、经验证的双端支持以及无参考的 junction 信号。junction 信号统计能跨越 contig 内部位置、并在两侧都具有局部验证序列 identity 的 reads；其目的在于区分真实跨越证据与仅在疑似 chimera 拼接点上表面成立的 k-mer placement。
+对于 Zymo，contig 和 reads 使用已知参考集的碱基级 identity 与比对覆盖度评估。对于没有完整参考的数据，使用 fixed-reference local-truth proxy、read-back breadth、经验证的 junction 两侧 read 支持以及无参考的 junction 信号；这些 proxy 不构成碱基级真值。junction 信号统计能跨越 contig 内部位置、并在两侧都具有局部验证序列 identity 的 reads；其目的在于区分真实跨越证据与仅在疑似 chimera 拼接点上表面成立的 k-mer placement。
 
 ### Workflow 概览
 
@@ -153,7 +153,7 @@ Racon(ML-draft)-versus-plain 是端到端比较，但单独来看不是消融实
 
 Racon(ML draft) 比 Racon(plain draft) 高 0.1616 个 identity 点（Wilcoxon p = 6.87e-13）。因此，约 84% 的原始 ML 增益在 polishing 后仍然保留；重叠收益仅为 0.0318 点。该结果支持二者具有互补机制：ML 改变形成 draft 的 read 集合，而 Racon 通过 read-to-contig realignment 和 partial-order consensus 纠正碱基。
 
-同一组合臂还在 2,970 个匹配 hs8 barcode 上，以 fixed-reference local-truth 评估测试。相对 plain raw，Racon(ML draft) 将 mean identity 提升 1.7675 点；但其 1.01% 的 severe-loss rate 实际上正处于预先规定的 1% 安全边界。Racon 因此是有前景的组装后阶段，而非当前生产默认；启用该组合路径前仍需要更大规模 field-sample 验证。
+同一组合臂还在 2,970 个匹配 hs8 barcode 上，以 fixed-reference local-truth proxy 评估测试：每个 barcode 的局部参考由 no-filter arm 固定分配。该方法会压缩效应量，且不能可靠排序差异接近的方案，因此这里的 identity 是 proxy identity，而非碱基级真值。相对 plain raw，Racon(ML draft) 的 mean proxy identity 提升 1.7675 点；但其 1.01% 的 severe-loss rate 实际上正处于预先规定的 1% 安全边界。Racon 因此是有前景的组装后阶段，而非当前生产默认；启用该组合路径前仍需要更大规模 field-sample 验证。
 
 ## 讨论
 
