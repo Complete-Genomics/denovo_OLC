@@ -449,6 +449,4 @@ and external validation across library types.
 
 The maintained implementation and workflow are in the
 [LFR pipeline denovo module](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo).
-This repository is a release-oriented description of the method.  Benchmark
-details, failed hypotheses, and decision records will be documented in
-[`tech_notes.md`](tech_notes.md).
+This repository is a release-oriented description of the method.  
