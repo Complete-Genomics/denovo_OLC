@@ -4,7 +4,7 @@
 
 We present [denovo_OLC](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo), a deterministic per-UMI OLC assembler for sparse SE600 linked-read pools.  Boundary-k-mer indexing, conservative overlap verification, internal-anchor recovery, and collective pileup rescue improve extension without globally relaxing mismatch thresholds.  A learned read-quality prefilter reduces the bounded conflict-graph workload while preserving graph-based decisions.
 
-On a 20,000-UMI benchmark, corrected component/merge semantics increased >=1 kb contigs from 16,908 to 21,139, with 99.3% of lengthened contigs achieving >=95% one-fold read-back breadth. Post-assembly Racon polishing of ML-selected drafts yielded a +1.77-point mean identity gain and an 11.41% severe-gain rate on small-scale UMI tests; it was initially evaluated as a fix for the severe-loss risk of gated-switch candidate selection, but a cheaper rule change (raising the read-support threshold of the selection gate) resolved the same risk without any polishing step, so Racon was not carried forward into production. Under the tightened gate, gated-switch selection has been validated on two evaluation cohorts and remains opt-in pending broader field deployment. A separate candidate-chimera GBDT is wired in only as a shadow sidecar; six paths that would have let it act on selection directly were each evaluated and closed for the same underlying failure mode.
+On a 20,000-UMI benchmark, corrected component/merge semantics increased >=1 kb contigs from 16,908 to 21,139, with 99.3% of lengthened contigs achieving >=95% one-fold read-back breadth. Post-assembly Racon polishing of ML-selected drafts yielded a +1.77-point mean identity gain and an 11.41% severe-gain rate on small-scale UMI tests; it was initially evaluated as a fix for the severe-loss risk of gated-switch candidate selection, but a cheaper rule change (raising the read-support threshold of the selection gate) resolved the same risk without any polishing step, so Racon was not carried forward into production. Under the tightened gate (`placed_reads >= 5`), gated-switch selection has been validated on two evaluation cohorts and a real-sample canary and, once chimera rate, severe-loss rate, and mean identity are weighed jointly, is the most balanced operating point among every tested approach while requiring no model inference at all — so it is now the production default for candidate selection. A separate candidate-chimera GBDT is wired in only as a shadow sidecar; six paths that would have let it act on selection directly were each evaluated and closed for the same underlying failure mode.
 
 ## Introduction
 
@@ -59,7 +59,8 @@ placement across a putative chimera join.
 Figure 1 summarizes the full workflow.  Solid paths describe the implemented
 SE workflow.  The ML prefilter and Racon branches are optional evaluated paths,
 not unconditional production defaults.  Candidate selection defaults to
-`longest`; `gated_switch` is opt-in.  The candidate-chimera GBDT is a
+`gated_switch` (`placed_reads >= 5`); the historical `longest` behavior remains
+explicitly selectable.  The candidate-chimera GBDT is a
 shadow-only sidecar: it scores and reports after rule-based selection, with no
 edge feeding back into assembly, selection, or delivery.  The anomaly gate runs
 before assembly: only an SE sample with adverse Zymo-relative depth and
@@ -85,8 +86,8 @@ flowchart LR
     I --> H
     H --> J[Per-UMI OLC\nboundary k-mer, verified overlaps,\ninternal anchors, collective rescue]
     J --> K[Draft contigs]
-    K --> O[Junction QC for all candidates\nonly runs when gated switch or shadow is on]
-    O --> P{Candidate selection\nlongest default; gated switch opt-in}
+    K --> O[Junction QC for all candidates\nalways runs since gated switch is the default]
+    O --> P{Candidate selection\ngated switch default, placed_reads>=5; longest optional}
     P --> Q[Rule-selected contig]
 
     Q --> L{Optional Racon polishing\npilot / evaluated, not adopted}
@@ -112,8 +113,8 @@ flowchart LR
     classDef production fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
     classDef optional fill:#fff8e1,stroke:#ef6c00,color:#e65100;
     classDef shadow fill:#e8eaf6,stroke:#3949ab,color:#1a237e;
-    class D,E,F,H,J,K,Q,M production;
-    class G,I,L,N,O,P,AA,AB,AC,AD,AE,AF,AG,AH optional;
+    class D,E,F,H,J,K,O,P,Q,M production;
+    class G,I,L,N,AA,AB,AC,AD,AE,AF,AG,AH optional;
     class R,S shadow;
 ```
 
@@ -232,12 +233,54 @@ their interaction.  This pilot evaluates the ML tie-break draft, not scheme B.
 
 ### Candidate selection and shadow monitoring
 
-The production-compatible candidate selector defaults to the historical
-`longest` behavior.  `candidate_select: gated_switch` is opt-in: it selects,
-in rank order, the first candidate passing a configured junction gate
-(`span_cov_ratio >= 0.25` and `placed_reads >= 5`), falling back to the
-primary candidate if none pass.  This read-support threshold was raised from
-an initial 2 to 5 after diagnosis showed that, under the looser gate,
+Greedy per-UMI OLC assembly produces **multiple** candidate contigs per
+barcode, not one: the first greedy pass consumes the entire currently
+available read pool and produces `k41_0` (the primary candidate, usually also
+the longest); once the reads consumed by that pass are removed from the pool,
+a second pass assembles the remaining reads into `k41_1`, and so on until the
+`max_contigs` cap is reached or no reads remain -- this pass order is
+`k41_rank` (0 = primary, larger = later). This generation mechanism has a
+direct consequence: the first pass has access to the largest possible read
+pool (no read in the barcode has yet been claimed), which is exactly when two
+distinct molecules that happen to share a short overlap in a conserved region
+are most likely to be greedily merged into a spurious long contig; once a
+read has been consumed to build that bridge in the first pass, it cannot
+reappear in the second pass's pool to repeat the same mistake. Empirically
+this shows up as a monotonic relationship: on `tail_raw`, chimera rate falls
+monotonically with candidate rank -- 9.6% at `k41_0`, declining at every
+subsequent rank, down to background noise levels (<1%) by `k41_3`.
+**"Longest" and "most chimera-like" are strongly correlated within the same
+UMI**, which is the mechanistic basis for switching to a lower-ranked
+candidate when the primary looks unreliable -- the origin of the "switch" in
+`gated_switch`.
+
+The gate judges reliability using two fields computed by
+`denovo_junction_qc.analyze()`:
+
+- **`span_cov_ratio`** = a candidate's median spanning depth divided by its
+  median plain depth -- how many independent reads carry verified local
+  identity on both sides across each position, relative to total read depth
+  at that position. It is a **ratio** with no absolute floor on the
+  numerator: when a candidate is literally a single read, spanning depth and
+  plain depth are both identically 1, so the ratio is exactly 1.0 -- a
+  perfect score. "One read perfectly covering itself" and "thirty reads
+  corroborating each other" are indistinguishable on this scale, and the
+  former reaches a perfect score more easily than the latter.
+- **`placed_reads`** = the **absolute count** of reads verified to span the
+  candidate's junctions, not a ratio. This field exists specifically to close
+  `span_cov_ratio`'s degenerate case -- the ratio alone would pass
+  single-read pseudo-contigs; only an absolute-count floor on top of it
+  excludes them.
+
+`gated_switch`'s selection algorithm: for each UMI, walk candidates in
+ascending `k41_rank` order and deliver the first one satisfying both
+`span_cov_ratio >= 0.25` and `placed_reads >= 5`; if none of the candidates
+pass, fall back to delivering `k41_0` (the primary).
+
+The production candidate selector defaults to `candidate_select: gated_switch`
+(the algorithm above); the historical `longest` behavior (always deliver
+`k41_0`) remains explicitly selectable. The `placed_reads` threshold was
+raised from an initial 2 to 5 after diagnosis showed that, under the looser gate,
 unpolished severe-loss (an identity drop of >=5 points relative to the
 primary candidate) was inconsistent across cohorts: 3.93% on the strict
 `tail_raw` held-out set, above the project's 3% acceptance line, versus only
@@ -245,14 +288,28 @@ primary candidate) was inconsistent across cohorts: 3.93% on the strict
 `placed_reads >= 5` brought both cohorts under the line without relying on
 any post-assembly polishing (tail_raw 2.10%, merged pool 1.09%), at the cost
 of a small chimera-rate increase (decidable-basis chimera on tail_raw rose
-from 5.52% to 5.65%) and a higher primary-candidate fallback rate.  Racon
-polishing had originally been evaluated as the planned fix for this same
-severe-loss gap; it was superseded by this cheaper rule change and was not
-carried forward into production.  Before this default was finalized, a
-3,000-UMI hs8 end-to-end canary validated the complete opt-in DAG (candidate
-selection, junction QC over all candidates, shadow scoring, downstream QC) on
-real, non-mock data, confirming that the relevant Snakemake dependencies
-resolve correctly outside the two Zymo evaluation cohorts as well.
+from 5.52% to 5.65%) and a higher primary-candidate fallback rate.
+
+This threshold was adopted as the production default based on a joint
+weighing of chimera rate, severe-loss rate, and mean identity, not because it
+dominates every tested approach on any single metric in isolation: the
+candidate-chimera GBDT can push chimera rate lower still (below), but at the
+cost of driving severe-loss to more than four times the acceptance line;
+Racon polishing can push mean identity higher, but its own severe-loss sits
+at a separate, stricter safety boundary and it requires additional
+minimap2/Racon inference cost. `placed_reads >= 5` is the only approach that
+clears the acceptance line on its own -- without any model inference or
+post-assembly polishing -- through a single gate-threshold change, which is
+what makes it deterministic, auditable, cheap to reason about, and easy to
+roll back, and is why it was chosen as the production default over both GBDT
+and Racon.  Racon polishing had originally been evaluated as the planned fix
+for this same severe-loss gap; it was superseded by this cheaper rule change
+and was not carried forward into production.  Before this default was
+finalized, a 3,000-UMI hs8 end-to-end canary validated the complete DAG
+(candidate selection, junction QC over all candidates, shadow scoring,
+downstream QC) on real, non-mock data, confirming that the relevant Snakemake
+dependencies resolve correctly outside the two Zymo evaluation cohorts as
+well.
 
 Six paths that would have let the model act directly on candidate selection
 were each evaluated and closed.  Unconstrained model-driven reselection
@@ -371,7 +428,12 @@ the local conflict structure.  The best tested division of labor is scheme B:
 ML first removes a small, fixed set of globally poor reads, after which the graph
 retains authority over local conflict resolution.  This improves both measured
 identity and pairwise cost, but its higher read-removal rate and limited
-cross-sample validation warrant caution.
+cross-sample validation warrant caution.  Candidate selection follows the same
+principle: once chimera rate, severe-loss rate, and mean identity are weighed
+jointly, the model-free `placed_reads >= 5` rule is the most balanced and
+cheapest-to-engineer operating point among everything tested, so it became the
+production default, while the more discriminating GBDT stays in a shadow
+role.
 
 Several plausible interventions were tested and rejected: whole-UMI removal,
 global mismatch relaxation, single-minimizer deduplication, homopolymer
