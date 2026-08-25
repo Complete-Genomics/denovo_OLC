@@ -295,9 +295,11 @@ weighing of chimera rate, severe-loss rate, and mean identity, not because it
 dominates every tested approach on any single metric in isolation: the
 candidate-chimera GBDT can push chimera rate lower still (below), but at the
 cost of driving severe-loss to more than four times the acceptance line;
-Racon polishing can push mean identity higher, but its own severe-loss sits
-at a separate, stricter safety boundary and it requires additional
-minimap2/Racon inference cost. `placed_reads >= 5` is the only approach that
+Racon polishing can push mean identity higher, but what it would fix
+is the very severe-loss gap `placed_reads >= 5` already closes without any
+polishing step at all -- both cohorts are already under the <=3% acceptance
+line -- so Racon's extra minimap2/Racon inference cost is no longer necessary
+spend. `placed_reads >= 5` is the only approach that
 clears the acceptance line on its own -- without any model inference or
 post-assembly polishing -- through a single gate-threshold change, which is
 what makes it deterministic, auditable, cheap to reason about, and easy to
