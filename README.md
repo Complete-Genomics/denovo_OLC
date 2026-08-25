@@ -72,42 +72,57 @@ cheap drift report runs first; only a `drift` verdict starts candidate training,
 assembly/read-back A/B testing, and the final promotion gate.
 
 ```mermaid
-flowchart LR
-    A[Input FASTQ with read qualities] --> B[Adapter trimming and barcode grouping]
-    B --> C[Barcode-grouped read TSV]
-    C --> D{Sample anomaly gate\nZymo-relative depth and length drift\nplus retained-depth safety}
-    D -->|normal or report-only| E[Original per-UMI read pools]
-    D -->|SE salvage| F[Remove reads under 300 bp\nkeep first 300 eligible reads per UMI]
-    F --> E
+flowchart TB
+    subgraph PRE[Input and preprocessing]
+        direction TB
+        A[Input FASTQ with read qualities] --> B[Adapter trimming and barcode grouping]
+        B --> C[Barcode-grouped read TSV]
+        C --> D{Sample anomaly gate\nZymo-relative depth and length drift\nplus retained-depth safety}
+        D -->|normal or report-only| E[Original per-UMI read pools]
+        D -->|SE salvage| F[Remove reads under 300 bp\nkeep first 300 eligible reads per UMI]
+        F --> E
+    end
 
-    E --> G{Optional ML prefilter\ntrained model available}
-    G -->|off or graph-only production path| H[Conflict-graph read-quality filtering]
-    G -->|scheme B, evaluated| I[Score reads and remove K lowest-scoring\nreads from capped candidate pool]
-    I --> H
-    H --> J[Per-UMI OLC\nboundary k-mer, verified overlaps,\ninternal anchors, collective rescue]
-    J --> K[Draft contigs]
-    K --> O[Junction QC for all candidates\nalways runs since gated switch is the default]
-    O --> P{Candidate selection\ngated switch default, placed_reads>=5; longest optional}
-    P --> Q[Rule-selected contig]
+    subgraph CORE[Assembly and rule-based selection]
+        direction TB
+        E --> G{Optional ML prefilter\ntrained model available}
+        G -->|off or graph-only production path| H[Conflict-graph read-quality filtering]
+        G -->|scheme B, evaluated| I[Score reads and remove K lowest-scoring\nreads from capped candidate pool]
+        I --> H
+        H --> J[Per-UMI OLC\nboundary k-mer, verified overlaps,\ninternal anchors, collective rescue]
+        J --> K[Draft contigs]
+        K --> O[Junction QC for all candidates\nalways runs since gated switch is the default]
+        O --> P{Candidate selection\ngated switch default, placed_reads>=5; longest optional}
+        P --> Q[Rule-selected contig]
+    end
 
-    Q --> L{Optional Racon polishing\npilot / evaluated, not adopted}
-    E -.->|pilot read pool, up to 50 reads| L
-    L -->|off| M[Deliver contigs and read-back / junction QC]
-    L -->|on| N[minimap2 read-to-contig alignment\nRacon partial-order consensus]
-    N --> M
+    subgraph DELIVERY[Optional polishing and delivery]
+        direction TB
+        Q --> L{Optional Racon polishing\npilot / evaluated, not adopted}
+        E -.->|pilot read pool, up to 50 reads| L
+        L -->|off| M[Deliver contigs and read-back / junction QC]
+        L -->|on| N[minimap2 read-to-contig alignment\nRacon partial-order consensus]
+        N --> M
+    end
 
-    O -.-> R["Shadow GBDT: P(chimera)\nscores only the rule-selected contig"]
-    P -.-> R
-    R -.-> S[Shadow reports: score distribution,\nrule disagreement, manual-review queue]
+    subgraph SHADOW[Shadow-only monitoring]
+        direction TB
+        O -.-> R["Shadow GBDT: P(chimera)\nscores only the rule-selected contig"]
+        Q -.-> R
+        R -.-> S[Shadow reports: score distribution,\nrule disagreement, manual-review queue]
+    end
 
-    AA[Mock-control FASTQ + known reference<br/>auto_retrain.smk] -.->|explicit invocation| AB[Cheap feature-drift report]
-    AB --> AC{Drift verdict}
-    AC -->|no_drift or degradation| AD[Keep incumbent\nreport only / investigate run]
-    AC -->|drift| AE[Train candidate ML model]
-    AE --> AF[Incumbent vs candidate\nassembly and read-back A/B]
-    AF --> AG{Promotion gate}
-    AG -->|pass| AH[Update models/in_use.lgb]
-    AG -->|fail| AD
+    subgraph RETRAIN[Explicit, separate model retraining]
+        direction TB
+        AA[Mock-control FASTQ + known reference<br/>auto_retrain.smk] -.->|explicit invocation| AB[Cheap feature-drift report]
+        AB --> AC{Drift verdict}
+        AC -->|no_drift or degradation| AD[Keep incumbent\nreport only / investigate run]
+        AC -->|drift| AE[Train candidate ML model]
+        AE --> AF[Incumbent vs candidate\nassembly and read-back A/B]
+        AF --> AG{Promotion gate}
+        AG -->|pass| AH[Update models/in_use.lgb]
+        AG -->|fail| AD
+    end
     AH -.->|next production run model handoff| G
 
     classDef production fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
